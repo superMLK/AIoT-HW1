@@ -1,7 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd frontend && npm ci && npm run build && mkdir -p ../public && cp -R dist/. ../public/",
-  "functions": {"app.py": {"maxDuration": 60}},
+  "functions": {"api/index.py": {"maxDuration": 60}},
+  "rewrites": [{"source": "/api/:path*", "destination": "/api/index.py"}],
   "crons": [
     {"path": "/api/refresh/O-A0001-001", "schedule": "12 0 * * *"},
     {"path": "/api/refresh/O-A0003-001", "schedule": "15 0 * * *"},

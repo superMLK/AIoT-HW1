@@ -130,12 +130,12 @@ npm run dev
 
 Vercel 函式的本機 SQLite 檔案不具持久性，因此正式環境必須設定 `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`；程式在 `VERCEL` 環境沒有 Turso URL 時會拒絕使用臨時 SQLite。[Vercel Flask 文件](https://vercel.com/docs/frameworks/backend/flask)說明 Flask `app.py` 入口與 `public/` 靜態檔案；[Vercel SQLite 說明](https://vercel.com/kb/guide/is-sqlite-supported-in-vercel)說明其持久化限制。
 
-1. 建立 Turso 資料庫及認證令牌，將上述兩個值加到 Vercel 專案環境變數。另設定 `CWA_API_KEY`、`REFRESH_TOKEN`、`CRON_SECRET`。
-2. 將此 Git repo 連接 Vercel，或使用官方 Vercel CLI 部署。根目錄的 `vercel.json` 會建置 React 並放入 `public/`，`app.py` 提供 Flask API。
-3. 第一次上線後以維護者密鑰在畫面選擇縣市並手動同步。若要一次初始化全臺，可在連接 Turso 的本機環境執行上述 `weather.sync --all`。
+1. 建立 Turso 資料庫及認證令牌，將上述兩個值加到 Vercel 專案 Production 私密環境變數。另設定 `CWA_API_KEY`、`REFRESH_TOKEN`、`CRON_SECRET`。
+2. 以 `vercel --prod` 部署。根目錄的 `vercel.json` 會建置 React 並放入 `public/`；`api/index.py` 將 `/api/*` 交給 Flask。`app.py` 是本機 Flask 入口。
+3. 第一次上線後以維護者密鑰手動同步，或在連接 Turso 的本機環境執行上述 `weather.sync --all` 初始化全臺。
 4. Vercel Hobby 的 Cron 每項工作每天最多執行一次；本專案範例每日更新觀測、22 縣市預報、地震、颱風與特報，預報工作分散於不同小時。實際時間以網站顯示的觀測時間為準，不能把每日同步說成每 10 分鐘即時更新。[Vercel Cron 限制](https://vercel.com/docs/cron-jobs/usage-and-pricing)。
 
-目前此 repo 只備妥部署設定；**尚未連結使用者的 Turso、GitHub 與 Vercel 帳戶，不能宣稱已公開上線**。
+**正式站：**[aiot-hw1.vercel.app](https://aiot-hw1.vercel.app/)；程式碼：[superMLK/AIoT-HW1](https://github.com/superMLK/AIoT-HW1)。2026-09-24 已使用 Turso 初始化 368 個行政區的資料，並驗證正式站首頁、測站、鄉鎮預報、警特報、地震、颱風及分析 API。程式碼已推送 GitHub，但 Vercel 帳戶尚未建立 GitHub Login Connection，**推送不會自動觸發部署**；目前由維護者執行 `vercel --prod` 上版。
 
 ## 測試與目前限制
 
