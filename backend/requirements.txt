@@ -1,0 +1,3 @@
+Flask>=3.1,<4
+certifi>=2025
+turso-serverless==0.1.0
