@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from api import create_app
 from weather.analysis import analyze
-from weather.db import init_schema, save_forecasts, save_observations
+from weather.db import bulk_insert, init_schema, save_forecasts, save_observations
 from weather.parser import parse_forecasts, parse_observations
 from weather.warnings import parse_warning_index
 
@@ -36,6 +36,14 @@ def observation_payload():
 
 
 class PipelineTests(unittest.TestCase):
+    def test_bulk_insert_splits_large_remote_safe_batches(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        bulk_insert(conn, "INSERT INTO sample VALUES", [(i, str(i)) for i in range(205)], 2)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM sample").fetchone()[0], 205)
+        self.assertEqual(conn.execute("SELECT value FROM sample WHERE id=204").fetchone()[0], "204")
+        conn.close()
+
     def test_parse_persist_and_match_latest_pre_target(self):
         conn = sqlite3.connect(":memory:")
         conn.execute("PRAGMA foreign_keys=ON")

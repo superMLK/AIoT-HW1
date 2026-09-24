@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from itertools import islice
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,6 +65,10 @@ def connect():
         token = os.environ.get("TURSO_AUTH_TOKEN")
         if not token:
             raise RuntimeError("TURSO_AUTH_TOKEN is not configured")
+        # urllib uses Python's default CA path, which can be absent on macOS.
+        # Keep certificate verification enabled with the bundled Mozilla CA list.
+        import certifi
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
         import turso_serverless
         conn = turso_serverless.connect(url, auth_token=token)
     else:
@@ -85,20 +90,29 @@ def init_schema(conn):
     conn.commit()
 
 
+def bulk_insert(conn, prefix, values, width, suffix="", chunk_size=200):
+    """Write bounded multi-row statements; Turso's executemany sends one HTTP request per row."""
+    iterator = iter(values)
+    placeholders = "(" + ",".join("?" for _ in range(width)) + ")"
+    while chunk := list(islice(iterator, chunk_size)):
+        conn.execute(prefix + ",".join([placeholders] * len(chunk)) + suffix,
+                     [value for row in chunk for value in row])
+
+
 def save_observations(conn, items):
     station_values = [(o["station_id"], o["name"], o["county"], o["town"],
                        o["latitude"], o["longitude"], o["altitude"]) for o in items]
-    conn.executemany("""INSERT INTO stations VALUES(?,?,?,?,?,?,?)
+    bulk_insert(conn, "INSERT INTO stations VALUES", station_values, 7, """
         ON CONFLICT(station_id) DO UPDATE SET name=excluded.name, county=excluded.county,
         town=excluded.town, latitude=excluded.latitude, longitude=excluded.longitude,
-        altitude=excluded.altitude""", station_values)
+        altitude=excluded.altitude""")
     values = [(o["station_id"], o["observed_at"], o["dataset_id"], o["temperature"],
                o["humidity"], o["precipitation"], int(o["precipitation_trace"]),
                o["wind_speed"], o["wind_direction"], o["weather"]) for o in items]
-    conn.executemany("""INSERT OR IGNORE INTO observations
+    bulk_insert(conn, """INSERT OR IGNORE INTO observations
         (station_id,observed_at,dataset_id,temperature,humidity,precipitation,
          precipitation_trace,wind_speed,wind_direction,weather)
-        VALUES(?,?,?,?,?,?,?,?,?,?)""", values)
+        VALUES""", values, 10)
     conn.commit()
     return {"received": len(items)}
 
@@ -118,18 +132,20 @@ def save_forecasts(conn, payload, items, fetched_at=None):
         key = (item["county"], item["town"])
         if key in locations:
             continue
-        conn.execute("""INSERT INTO locations(county,town,geocode,latitude,longitude)
-            VALUES(?,?,?,?,?) ON CONFLICT(county,town) DO UPDATE SET
-            geocode=excluded.geocode, latitude=excluded.latitude, longitude=excluded.longitude""",
-            (*key, item["geocode"], item["latitude"], item["longitude"]))
-        locations[key] = conn.execute("SELECT id FROM locations WHERE county=? AND town=?", key).fetchone()[0]
+        locations[key] = (item["county"], item["town"], item["geocode"],
+                          item["latitude"], item["longitude"])
+    bulk_insert(conn, "INSERT INTO locations(county,town,geocode,latitude,longitude) VALUES",
+                locations.values(), 5, """ ON CONFLICT(county,town) DO UPDATE SET
+            geocode=excluded.geocode, latitude=excluded.latitude, longitude=excluded.longitude""")
+    locations = {(county, town): location_id for location_id, county, town in
+                 conn.execute("SELECT id,county,town FROM locations")}
     values = [(batch_id, locations[(i["county"], i["town"])], i["kind"], i["start_at"],
                i["end_at"], i.get("temperature"), i.get("apparent_temperature"),
                i.get("humidity"), i.get("pop"), i.get("weather"), i.get("wind_speed"),
                i.get("wind_direction")) for i in items]
-    conn.executemany("""INSERT OR IGNORE INTO forecasts
+    bulk_insert(conn, """INSERT OR IGNORE INTO forecasts
         (batch_id,location_id,kind,start_at,end_at,temperature,apparent_temperature,
-         humidity,pop,weather,wind_speed,wind_direction) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+         humidity,pop,weather,wind_speed,wind_direction) VALUES""", values, 12)
     # Explicit, documented representative station; never assign by nearest distance.
     conn.execute("""INSERT OR IGNORE INTO location_station_mapping(location_id,station_id)
         SELECT l.id, s.station_id FROM locations l JOIN stations s ON s.station_id='466920'
@@ -139,20 +155,20 @@ def save_forecasts(conn, payload, items, fetched_at=None):
 
 
 def save_earthquakes(conn, items):
-    conn.executemany("""INSERT INTO earthquakes VALUES(?,?,?,?,?,?,?,?)
+    bulk_insert(conn, "INSERT INTO earthquakes VALUES", [(x["quake_id"], x["origin_at"],
+        x["latitude"], x["longitude"], x["magnitude"], x["depth_km"],
+        x["location"], x["report_url"]) for x in items], 8, """
         ON CONFLICT(quake_id) DO UPDATE SET origin_at=excluded.origin_at,
         latitude=excluded.latitude,longitude=excluded.longitude,magnitude=excluded.magnitude,
-        depth_km=excluded.depth_km,location=excluded.location,report_url=excluded.report_url""",
-        [(x["quake_id"], x["origin_at"], x["latitude"], x["longitude"],
-          x["magnitude"], x["depth_km"], x["location"], x["report_url"]) for x in items])
+        depth_km=excluded.depth_km,location=excluded.location,report_url=excluded.report_url""")
     conn.commit()
     return {"received": len(items)}
 
 
 def save_typhoons(conn, items):
     conn.execute("DELETE FROM typhoon_points")
-    conn.executemany("INSERT INTO typhoon_points VALUES(?,?,?,?,?)",
-                     [(x["name"], x["kind"], x["valid_at"], x["latitude"], x["longitude"])
-                      for x in items])
+    bulk_insert(conn, "INSERT INTO typhoon_points VALUES",
+                [(x["name"], x["kind"], x["valid_at"], x["latitude"], x["longitude"])
+                 for x in items], 5)
     conn.commit()
     return {"received": len(items)}

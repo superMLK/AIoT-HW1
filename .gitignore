@@ -10,3 +10,4 @@ frontend/dist/
 /public/
 .vercel/
 .DS_Store
+.vercel
