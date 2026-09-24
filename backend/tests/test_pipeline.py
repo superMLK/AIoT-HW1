@@ -79,14 +79,74 @@ class PipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"CRON_SECRET": "cron-test-secret", "REFRESH_TOKEN": "manual-test-secret"}):
             client = create_app().test_client()
             with patch("api.fetch_json") as fetch:
-                for method, headers in ((client.get, {}), (client.get, {"Authorization": "Bearer wrong"}),
-                                        (client.post, {}), (client.post, {"X-Refresh-Token": "wrong"})):
+                for method, headers in ((client.get, {}), (client.get, {"Authorization": "Bearer wrong"})):
                     self.assertEqual(method("/api/refresh?dataset=O-A0001-001", headers=headers).status_code, 403)
                 self.assertEqual(client.get("/api/refresh?dataset=invalid", headers={
                     "Authorization": "Bearer cron-test-secret"}).status_code, 400)
                 self.assertEqual(client.get("/api/refresh/O-A0001-001", headers={
                     "Authorization": "Bearer wrong"}).status_code, 403)
                 fetch.assert_not_called()
+
+    def test_public_refresh_deduplicates_and_limits_failed_attempts(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SQLITE_PATH": tmp + "/test.db", "TURSO_DATABASE_URL": ""}):
+            client = create_app().test_client()
+            with patch("api.fetch_json", return_value=observation_payload()) as fetch:
+                result = client.post("/api/refresh?dataset=O-A0003-001")
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.json["received"], 1)
+                self.assertTrue(client.post("/api/refresh?dataset=O-A0003-001").json["cached"])
+                self.assertEqual(fetch.call_count, 1)
+            with patch("api.fetch_json", side_effect=RuntimeError("upstream unavailable")) as fetch:
+                self.assertEqual(client.post("/api/refresh?dataset=O-A0001-001").status_code, 503)
+                self.assertTrue(client.post("/api/refresh?dataset=O-A0001-001").json["cached"])
+                self.assertEqual(fetch.call_count, 1)
+
+    def test_public_refresh_concurrent_clients_share_lease(self):
+        import tempfile
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        entered, release = threading.Event(), threading.Event()
+        def slow_fetch(dataset):
+            entered.set()
+            release.wait(3)
+            return observation_payload()
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SQLITE_PATH": tmp + "/test.db", "TURSO_DATABASE_URL": ""}):
+            app = create_app()
+            # Initialize schema before racing clients.
+            app.test_client().get("/api/locations")
+            with patch("api.fetch_json", side_effect=slow_fetch) as fetch, ThreadPoolExecutor(2) as pool:
+                first = pool.submit(lambda: app.test_client().post("/api/refresh?dataset=O-A0003-001"))
+                self.assertTrue(entered.wait(2))
+                second = app.test_client().post("/api/refresh?dataset=O-A0003-001")
+                self.assertTrue(second.json["cached"])
+                release.set()
+                self.assertEqual(first.result().status_code, 200)
+                self.assertEqual(fetch.call_count, 1)
+
+    def test_radar_failed_fetch_is_shared_and_rate_limited(self):
+        import tempfile
+        from weather.db import connect
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"SQLITE_PATH": tmp + "/test.db", "TURSO_DATABASE_URL": ""}):
+            client = create_app().test_client()
+            client.get("/api/radar")
+            conn = connect()
+            conn.execute("INSERT INTO radar_frames VALUES(?,?)", ("CV1_3600_202609241350.png", "2026-09-24T13:50:00+08:00"))
+            conn.commit(); conn.close()
+            with patch("api.fetch_frame", side_effect=TimeoutError()) as fetch:
+                for _ in range(3):
+                    self.assertEqual(client.get("/api/radar/image/CV1_3600_202609241350.png").status_code, 503)
+                self.assertEqual(fetch.call_count, 1)
+
+    def test_official_radar_index_and_wind_missing_values(self):
+        from weather.radar import parse_frames
+        from weather.wind import parse_wind
+        self.assertEqual(parse_frames("'CV1_3600_202609241350.png'")[0]["observed_at"], "2026-09-24T13:50:00+08:00")
+        with self.assertRaises(ValueError):
+            parse_frames("source unavailable")
+        payload = {"table": {"columnNames": ["time","latitude","longitude","ugrd10m","vgrd10m"],
+                            "rows": [["2026-09-24T06:00:00Z",25,121,3,4], ["2026-09-24T06:00:00Z",26,121,None,4]]}}
+        self.assertEqual(len(parse_wind(payload)), 1)
 
     def test_warning_scraper_distinguishes_empty_from_failure(self):
         self.assertEqual(parse_warning_index("var WarnAll = [];"), [])

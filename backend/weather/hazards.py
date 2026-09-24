@@ -45,5 +45,10 @@ def parse_typhoons(payload):
                     valid_at = (datetime.fromisoformat(valid_at) +
                                 timedelta(hours=int(fix.get("ForecastHour") or 0))).isoformat()
                 points.append({"name": name, "kind": kind, "valid_at": valid_at,
-                               "latitude": lat, "longitude": lon})
+                               "latitude": lat, "longitude": lon,
+                               "wind_speed": number(fix.get("MaxWindSpeed"), lower=0),
+                               "pressure": number(fix.get("Pressure"), lower=0),
+                               "radius15": number((fix.get("Circle15ms") or {}).get("Radius"), lower=0),
+                               "radius25": number((fix.get("Circle25ms") or {}).get("Radius"), lower=0),
+                               "probability_radius": number(fix.get("Radius70PercentProbability"), lower=0)})
     return points

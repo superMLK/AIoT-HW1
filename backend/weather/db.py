@@ -10,7 +10,15 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parents[1] / "weather.sqlite3"
 
+SCHEMA_VERSION = 2
 SCHEMA = [
+    "CREATE TABLE IF NOT EXISTS schema_version(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS radar_cache(filename TEXT PRIMARY KEY,payload BLOB,retry_after TEXT NOT NULL)",
+    """CREATE TABLE IF NOT EXISTS wind_grid(valid_at TEXT NOT NULL,latitude REAL NOT NULL,
+      longitude REAL NOT NULL,u REAL NOT NULL,v REAL NOT NULL,PRIMARY KEY(valid_at,latitude,longitude))""",
+    "CREATE TABLE IF NOT EXISTS radar_frames(filename TEXT PRIMARY KEY, observed_at TEXT NOT NULL)",
+    """CREATE TABLE IF NOT EXISTS refresh_leases (
+      source TEXT PRIMARY KEY, locked_until TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS locations (
       id INTEGER PRIMARY KEY, county TEXT NOT NULL, town TEXT NOT NULL,
       geocode TEXT NOT NULL DEFAULT '', latitude REAL, longitude REAL,
@@ -52,6 +60,10 @@ SCHEMA = [
       quake_id TEXT PRIMARY KEY, origin_at TEXT NOT NULL, latitude REAL NOT NULL,
       longitude REAL NOT NULL, magnitude REAL, depth_km REAL, location TEXT,
       report_url TEXT)""",
+    """CREATE TABLE IF NOT EXISTS typhoon_details (
+      name TEXT NOT NULL, kind TEXT NOT NULL, valid_at TEXT NOT NULL,
+      wind_speed REAL, pressure REAL, radius15 REAL, radius25 REAL, probability_radius REAL,
+      PRIMARY KEY(name,kind,valid_at))""",
     """CREATE TABLE IF NOT EXISTS typhoon_points (
       name TEXT NOT NULL, kind TEXT NOT NULL, valid_at TEXT NOT NULL,
       latitude REAL NOT NULL, longitude REAL NOT NULL,
@@ -87,6 +99,7 @@ def rows(cursor):
 def init_schema(conn):
     for ddl in SCHEMA:
         conn.execute(ddl)
+    conn.execute("INSERT OR REPLACE INTO schema_version(id,version) VALUES(1,?)", (SCHEMA_VERSION,))
     conn.commit()
 
 
@@ -97,6 +110,16 @@ def bulk_insert(conn, prefix, values, width, suffix="", chunk_size=200):
     while chunk := list(islice(iterator, chunk_size)):
         conn.execute(prefix + ",".join([placeholders] * len(chunk)) + suffix,
                      [value for row in chunk for value in row])
+
+
+def assign_representatives(conn):
+    """Freeze a same-town hourly station; never borrow a station across town boundaries."""
+    conn.execute("""INSERT OR IGNORE INTO location_station_mapping(location_id,station_id)
+        SELECT l.id, MIN(s.station_id) FROM locations l JOIN stations s
+        ON s.county=l.county AND s.town=l.town
+        WHERE EXISTS(SELECT 1 FROM observations o WHERE o.station_id=s.station_id
+          AND o.dataset_id='O-A0001-001' AND o.temperature IS NOT NULL)
+        GROUP BY l.id""")
 
 
 def save_observations(conn, items):
@@ -113,6 +136,7 @@ def save_observations(conn, items):
         (station_id,observed_at,dataset_id,temperature,humidity,precipitation,
          precipitation_trace,wind_speed,wind_direction,weather)
         VALUES""", values, 10)
+    assign_representatives(conn)
     conn.commit()
     return {"received": len(items)}
 
@@ -150,6 +174,7 @@ def save_forecasts(conn, payload, items, fetched_at=None):
     conn.execute("""INSERT OR IGNORE INTO location_station_mapping(location_id,station_id)
         SELECT l.id, s.station_id FROM locations l JOIN stations s ON s.station_id='466920'
         WHERE l.county='臺北市' AND l.town='中正區'""")
+    assign_representatives(conn)
     conn.commit()
     return {"received": len(items), "duplicate_batch": False, "issued_at": issued_at}
 
@@ -167,6 +192,10 @@ def save_earthquakes(conn, items):
 
 def save_typhoons(conn, items):
     conn.execute("DELETE FROM typhoon_points")
+    conn.execute("DELETE FROM typhoon_details")
+    bulk_insert(conn, "INSERT INTO typhoon_details VALUES", [(x["name"], x["kind"], x["valid_at"],
+        x.get("wind_speed"), x.get("pressure"), x.get("radius15"), x.get("radius25"),
+        x.get("probability_radius")) for x in items], 8)
     bulk_insert(conn, "INSERT INTO typhoon_points VALUES",
                 [(x["name"], x["kind"], x["valid_at"], x["latitude"], x["longitude"])
                  for x in items], 5)

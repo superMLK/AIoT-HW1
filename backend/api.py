@@ -1,3 +1,9 @@
+from threading import Lock
+from weather.db import SCHEMA_VERSION
+from urllib.error import URLError
+from weather.wind import sync_wind
+from flask import Response
+from weather.radar import sync_radar, fetch_frame
 """Flask REST endpoints. External fetch, parsing, storage, and analysis stay separate."""
 
 import hmac
@@ -18,13 +24,21 @@ from weather.warnings import scrape_warnings
 def create_app():
     app = Flask(__name__)
     schema_ready = False
+    schema_lock = Lock()
 
     def database():
         nonlocal schema_ready
         conn = connect()
         if not schema_ready:
-            init_schema(conn)
-            schema_ready = True
+            with schema_lock:
+                if not schema_ready:
+                    try:
+                        version = conn.execute("SELECT version FROM schema_version WHERE id=1").fetchone()
+                    except Exception:
+                        version = None
+                    if not version or version[0] < SCHEMA_VERSION:
+                        init_schema(conn)
+                    schema_ready = True
         return conn
 
     @app.errorhandler(ValueError)
@@ -34,6 +48,11 @@ def create_app():
     @app.errorhandler(RuntimeError)
     def unavailable(exc):
         return jsonify(error=str(exc)), 503
+
+    @app.errorhandler(URLError)
+    @app.errorhandler(TimeoutError)
+    def upstream_unavailable(exc):
+        return jsonify(error="上游資料暫時無法取得，已保留原有資料。請稍後再試。"), 503
 
     @app.get("/api/health")
     def health():
@@ -104,7 +123,15 @@ def create_app():
             observations = rows(conn.execute("""SELECT observed_at,temperature FROM observations
                 WHERE station_id=? AND dataset_id='O-A0001-001' AND temperature IS NOT NULL
                 ORDER BY observed_at DESC LIMIT 1000""", (mapping[0],)))
-            return jsonify(available=True, station_id=mapping[0], **analyze(forecasts, observations))
+            result = analyze(forecasts, observations)
+            eligible = [f for f in forecasts if f["temperature"] is not None and f["issued_at"] < f["start_at"]]
+            reason = None
+            if not result["pairs"]:
+                reason = ("尚無已到期的事前預報；請先保存預報，等目標時間到達後再更新觀測。" if not eligible
+                          else "已有事前預報，但尚未保存目標時間 ±30 分鐘內的有效逐時觀測；最新 API 不會補回所有過去觀測。")
+            elif result["sample_count"] < 2:
+                reason = "已有一筆真實誤差，累積至少兩筆有效配對後顯示 MAE。"
+            return jsonify(available=True, station_id=mapping[0], reason=reason, **result)
         finally:
             conn.close()
 
@@ -127,12 +154,60 @@ def create_app():
         finally:
             conn.close()
 
+    @app.get("/api/wind")
+    def wind():
+        conn = database()
+        try:
+            return jsonify(source="NOAA GFS 0.5° / 10 m", points=rows(conn.execute("SELECT * FROM wind_grid")))
+        finally:
+            conn.close()
+
+    @app.get("/api/radar")
+    def radar():
+        conn = database()
+        try:
+            return jsonify(frames=rows(conn.execute("SELECT * FROM radar_frames ORDER BY observed_at")))
+        finally:
+            conn.close()
+
+    @app.get("/api/radar/image/<filename>")
+    def radar_image(filename):
+        conn = database()
+        try:
+            if not conn.execute("SELECT 1 FROM radar_frames WHERE filename=?", (filename,)).fetchone():
+                return jsonify(error="影像不在已保存的時間清單內"), 404
+            cached = conn.execute("SELECT payload FROM radar_cache WHERE filename=?", (filename,)).fetchone()
+            data = cached[0] if cached else None
+            if data is None:
+                now = datetime.now(timezone.utc)
+                lease = conn.execute("""INSERT INTO radar_cache(filename,retry_after) VALUES(?,?)
+                    ON CONFLICT(filename) DO UPDATE SET retry_after=excluded.retry_after
+                    WHERE radar_cache.retry_after<=? AND radar_cache.payload IS NULL RETURNING filename""",
+                    (filename, (now + timedelta(minutes=1)).isoformat(), now.isoformat())).fetchone()
+                conn.commit()
+                if not lease:
+                    return jsonify(error="雷達影像取得中或暫時不可用，請稍後再試。"), 503, {"Retry-After": "60"}
+        finally:
+            conn.close()
+        if data is None:
+            data = fetch_frame(filename)
+            conn = database()
+            try:
+                conn.execute("UPDATE radar_cache SET payload=? WHERE filename=?", (data, filename))
+                conn.commit()
+            finally:
+                conn.close()
+        return Response(data, mimetype="image/png",
+                        headers={"Cache-Control": "public, max-age=86400, s-maxage=86400"})
+
     @app.get("/api/typhoons")
     def typhoons():
         conn = database()
         try:
             return jsonify(points=rows(conn.execute(
-                "SELECT * FROM typhoon_points ORDER BY name,kind,valid_at")))
+                """SELECT p.*,d.wind_speed,d.pressure,d.radius15,d.radius25,d.probability_radius
+                FROM typhoon_points p LEFT JOIN typhoon_details d
+                USING(name,kind,valid_at) ORDER BY p.name,p.valid_at""")))
         finally:
             conn.close()
 
@@ -144,21 +219,33 @@ def create_app():
             valid = bool(secret and hmac.compare_digest(
                 request.headers.get("Authorization", ""), "Bearer " + secret))
         else:
-            secret = os.environ.get("REFRESH_TOKEN")
-            valid = bool(secret and hmac.compare_digest(
-                request.headers.get("X-Refresh-Token", ""), secret))
+            # Public manual refresh is bounded by a shared database lease below.
+            valid = True
         if not valid:
             return jsonify(error="refresh requires the correct server-side token"), 403
         dataset = dataset or request.args.get("dataset", "O-A0003-001")
-        if dataset not in DATASETS | {"warnings"}:
+        if dataset not in DATASETS | {"warnings", "radar", "wind"}:
             raise ValueError("unsupported sync source")
         conn = database()
         try:
-            previous = conn.execute("SELECT checked_at FROM source_status WHERE source=? AND status='ok'", (dataset,)).fetchone()
-            if previous and datetime.now(timezone.utc) - datetime.fromisoformat(previous[0]) < timedelta(minutes=5):
-                return jsonify(error="source was synced within the last five minutes"), 429
+            now = datetime.now(timezone.utc)
+            until = (now + timedelta(minutes=5)).isoformat()
+            lease = conn.execute("""INSERT INTO refresh_leases(source,locked_until) VALUES(?,?)
+                ON CONFLICT(source) DO UPDATE SET locked_until=excluded.locked_until
+                WHERE refresh_leases.locked_until<=? RETURNING locked_until""",
+                (dataset, until, now.isoformat())).fetchone()
+            conn.commit()
+            if not lease:
+                return jsonify(source=dataset, cached=True,
+                               message="最近已嘗試更新，目前顯示已保存資料；五分鐘後可再試。")
         finally:
             conn.close()
+        if dataset in ("radar", "wind"):
+            conn = database()
+            try:
+                return jsonify(**(sync_radar(conn) if dataset == "radar" else sync_wind(conn)))
+            finally:
+                conn.close()
         if dataset == "warnings":
             parsed = scrape_warnings()
             conn = database()

@@ -1,35 +1,133 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd frontend && npm ci && npm run build && mkdir -p ../public && cp -R dist/. ../public/",
-  "functions": {"api/index.py": {"maxDuration": 60}},
-  "rewrites": [{"source": "/api/:path*", "destination": "/api/index.py"}],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
+    }
+  ],
   "crons": [
-    {"path": "/api/refresh/O-A0001-001", "schedule": "12 0 * * *"},
-    {"path": "/api/refresh/O-A0003-001", "schedule": "15 0 * * *"},
-    {"path": "/api/refresh/F-D0047-001", "schedule": "18 0 * * *"},
-    {"path": "/api/refresh/F-D0047-005", "schedule": "18 1 * * *"},
-    {"path": "/api/refresh/F-D0047-009", "schedule": "18 2 * * *"},
-    {"path": "/api/refresh/F-D0047-013", "schedule": "18 3 * * *"},
-    {"path": "/api/refresh/F-D0047-017", "schedule": "18 4 * * *"},
-    {"path": "/api/refresh/F-D0047-021", "schedule": "18 5 * * *"},
-    {"path": "/api/refresh/F-D0047-025", "schedule": "18 6 * * *"},
-    {"path": "/api/refresh/F-D0047-029", "schedule": "18 7 * * *"},
-    {"path": "/api/refresh/F-D0047-033", "schedule": "18 8 * * *"},
-    {"path": "/api/refresh/F-D0047-037", "schedule": "18 9 * * *"},
-    {"path": "/api/refresh/F-D0047-041", "schedule": "18 10 * * *"},
-    {"path": "/api/refresh/F-D0047-045", "schedule": "18 11 * * *"},
-    {"path": "/api/refresh/F-D0047-049", "schedule": "18 12 * * *"},
-    {"path": "/api/refresh/F-D0047-053", "schedule": "18 13 * * *"},
-    {"path": "/api/refresh/F-D0047-057", "schedule": "18 14 * * *"},
-    {"path": "/api/refresh/F-D0047-061", "schedule": "18 15 * * *"},
-    {"path": "/api/refresh/F-D0047-065", "schedule": "18 16 * * *"},
-    {"path": "/api/refresh/F-D0047-069", "schedule": "18 17 * * *"},
-    {"path": "/api/refresh/F-D0047-073", "schedule": "18 18 * * *"},
-    {"path": "/api/refresh/F-D0047-077", "schedule": "18 19 * * *"},
-    {"path": "/api/refresh/F-D0047-081", "schedule": "18 20 * * *"},
-    {"path": "/api/refresh/F-D0047-085", "schedule": "18 21 * * *"},
-    {"path": "/api/refresh/E-A0015-001", "schedule": "21 0 * * *"},
-    {"path": "/api/refresh/W-C0034-005", "schedule": "24 0 * * *"},
-    {"path": "/api/refresh/warnings", "schedule": "27 0 * * *"}
+    {
+      "path": "/api/refresh/O-A0001-001",
+      "schedule": "12 0 * * *"
+    },
+    {
+      "path": "/api/refresh/O-A0003-001",
+      "schedule": "15 0 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-001",
+      "schedule": "18 0 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-005",
+      "schedule": "18 1 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-009",
+      "schedule": "18 2 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-013",
+      "schedule": "18 3 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-017",
+      "schedule": "18 4 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-021",
+      "schedule": "18 5 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-025",
+      "schedule": "18 6 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-029",
+      "schedule": "18 7 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-033",
+      "schedule": "18 8 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-037",
+      "schedule": "18 9 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-041",
+      "schedule": "18 10 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-045",
+      "schedule": "18 11 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-049",
+      "schedule": "18 12 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-053",
+      "schedule": "18 13 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-057",
+      "schedule": "18 14 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-061",
+      "schedule": "18 15 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-065",
+      "schedule": "18 16 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-069",
+      "schedule": "18 17 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-073",
+      "schedule": "18 18 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-077",
+      "schedule": "18 19 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-081",
+      "schedule": "18 20 * * *"
+    },
+    {
+      "path": "/api/refresh/F-D0047-085",
+      "schedule": "18 21 * * *"
+    },
+    {
+      "path": "/api/refresh/E-A0015-001",
+      "schedule": "21 0 * * *"
+    },
+    {
+      "path": "/api/refresh/W-C0034-005",
+      "schedule": "24 0 * * *"
+    },
+    {
+      "path": "/api/refresh/warnings",
+      "schedule": "27 0 * * *"
+    },
+    {
+      "path": "/api/refresh/radar",
+      "schedule": "30 0 * * *"
+    },
+    {
+      "path": "/api/refresh/wind",
+      "schedule": "33 0 * * *"
+    }
   ]
 }
